@@ -208,13 +208,15 @@ def check_reminder():
         if med_date.date() != today or med_status != 'pending':
             continue  # 只針對今日且 pending 的提醒
 
-        buttons_template = TextSendMessage(
-            text=f"今天是餵隊長{Medicine[med]}的日子！請確認是否完成！",
-            quick_reply=QuickReply(items=med_buttons(med)))
+        text = f"今天是餵隊長{Medicine[med]}的日子！請確認是否完成！"
+        quick_msg = TextSendMessage(text=text, quick_reply=QuickReply(items=med_buttons(med)))
+        # 群組/多人聊天常被閒聊洗掉 Quick Reply（任何新訊息都會讓按鈕消失），改用不會消失的按鈕卡；ID 前綴 C=群組、R=多人聊天、U=使用者
+        card_msg = TemplateSendMessage(alt_text='提醒訊息', template=ButtonsTemplate(
+            text=text, actions=[b.action for b in med_buttons(med)]))
         # 推播給所有註冊使用者
         for usr in LineUser.query.all():
             try:
-                line_bot_api.push_message(usr.user_id, buttons_template)
+                line_bot_api.push_message(usr.user_id, card_msg if usr.user_id[0] in "CR" else quick_msg)
             except Exception as e:
                 app.logger.warning(f"推送給 {usr.user_id} 失敗：{e}")
 
