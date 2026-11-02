@@ -47,6 +47,16 @@ def pb(source, data, params=None, token="t"):
     return NS(source=source, reply_token=token, postback=NS(data=json.dumps(data), params=params))
 
 
+def jpeg_size(data):
+    i = 2
+    while i < len(data):
+        marker, length = data[i + 1], struct.unpack(">H", data[i + 2:i + 4])[0]
+        if marker in (0xC0, 0xC1, 0xC2):  # SOF：高、寬
+            height, width = struct.unpack(">HH", data[i + 5:i + 9])
+            return width, height
+        i += 2 + length
+
+
 def day(offset):
     return (datetime.now(TZ) + timedelta(days=offset)).strftime("%Y-%m-%d")
 
@@ -217,10 +227,10 @@ class RichMenu(unittest.TestCase):
 
     def test_image_matches_menu_size(self):
         with open(setup_rich_menu.IMAGE, "rb") as f:
-            head = f.read(24)
-        self.assertEqual(head[:8], b"\x89PNG\r\n\x1a\n")
-        self.assertEqual(struct.unpack(">II", head[16:24]), setup_rich_menu.SIZE)
-        self.assertLess(os.path.getsize(setup_rich_menu.IMAGE), 1_000_000)
+            data = f.read()
+        self.assertEqual(data[:2], b"\xff\xd8")  # JPEG
+        self.assertEqual(jpeg_size(data), setup_rich_menu.SIZE)
+        self.assertLess(len(data), 1_000_000)
 
 
 if __name__ == "__main__":
