@@ -37,7 +37,7 @@ MYSQL_DB = os.getenv("MYSQL_DB", "EasonAndClaire$default")
 MYSQL_HOST = os.getenv("MYSQL_HOST", "EasonAndClaire.mysql.pythonanywhere-services.com")
 MYSQL_PORT = os.getenv("MYSQL_PORT", "3306")
 
-app.config['SQLALCHEMY_DATABASE_URI'] = f'mysql+pymysql://{quote_plus(MYSQL_USER)}:{quote_plus(MYSQL_PASSWORD or "")}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}'
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("DATABASE_URL") or f'mysql+pymysql://{quote_plus(MYSQL_USER)}:{quote_plus(MYSQL_PASSWORD or "")}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # TiDB 公網連線閒置 340 秒會被切斷，連線池需在此之前回收
 engine_options = {"pool_recycle": 280, "pool_pre_ping": True}
