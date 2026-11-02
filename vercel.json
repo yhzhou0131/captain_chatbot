@@ -1,3 +1,6 @@
 {
-  "regions": ["hnd1"]
+  "regions": ["hnd1"],
+  "crons": [
+    { "path": "/trigger_reminder", "schedule": "0 22 * * *" }
+  ]
 }

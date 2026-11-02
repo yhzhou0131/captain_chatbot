@@ -3,7 +3,7 @@ from flask_sqlalchemy import SQLAlchemy
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import *
-import os, re, json
+import os, re, json, hmac
 from urllib.parse import quote_plus
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
@@ -61,6 +61,7 @@ db = SQLAlchemy(app)
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+CRON_SECRET = os.getenv("CRON_SECRET")
 if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET:
     raise ValueError("LINE bot token/secret 未設定，請檢查 .env")
 
@@ -122,6 +123,9 @@ def callback():
 
 @app.route('/trigger_reminder', methods=['GET'])
 def trigger_reminder():
+    # Vercel cron 會自動帶 "Authorization: Bearer $CRON_SECRET"；未設定時一律拒絕
+    if not CRON_SECRET or not hmac.compare_digest(request.headers.get("Authorization", ""), f"Bearer {CRON_SECRET}"):
+        abort(401)
     check_reminder()
     return "Reminder triggered!", 200
 
