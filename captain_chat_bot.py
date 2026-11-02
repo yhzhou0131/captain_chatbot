@@ -105,6 +105,34 @@ def register_user(user_id: str):
         db.session.add(LineUser(user_id=user_id))
         db.session.commit()
 
+# 推播目標：群組/多人聊天登記聊天室 ID（群組成員未必是好友，推播到群組即可涵蓋）；一對一登記使用者 ID
+# LineUser.user_id 欄位同時存放 user/group/room ID（ID 前綴不同不會衝突），避免資料表遷移
+def chat_id(source) -> str:
+    return getattr(source, "group_id", None) or getattr(source, "room_id", None) or source.user_id
+
+def unregister(target_id: str):
+    LineUser.query.filter_by(user_id=target_id).delete()
+    db.session.commit()
+
+def display_name(source) -> str:
+    try:
+        if source.type == "group":
+            return line_bot_api.get_group_member_profile(source.group_id, source.user_id).display_name
+        if source.type == "room":
+            return line_bot_api.get_room_member_profile(source.room_id, source.user_id).display_name
+        return line_bot_api.get_profile(source.user_id).display_name
+    except Exception as e:
+        app.logger.warning(f"取得顯示名稱失敗：{e}")
+        return "有人"
+
+def broadcast(text: str, exclude: str):
+    # exclude：事件發生的聊天室，已用 reply 回覆過，不重複推播
+    for usr in LineUser.query.filter(LineUser.user_id != exclude).all():
+        try:
+            line_bot_api.push_message(usr.user_id, TextSendMessage(text=text))
+        except Exception as e:
+            app.logger.warning(f"推送給 {usr.user_id} 失敗：{e}")
+
 # --------------------------- 基本路由 ---------------------------
 @app.route('/')
 def home():
@@ -133,12 +161,24 @@ def trigger_reminder():
 @handler.add(JoinEvent)
 def handle_join(event):
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text="感謝邀請我加入！"))
-    register_user(event.source.user_id)
+    register_user(chat_id(event.source))
+
+@handler.add(FollowEvent)
+def handle_follow(event):
+    register_user(chat_id(event.source))
+
+@handler.add(UnfollowEvent)
+def handle_unfollow(event):
+    unregister(chat_id(event.source))
+
+@handler.add(LeaveEvent)
+def handle_leave(event):
+    unregister(chat_id(event.source))
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_input = event.message.text.strip()
-    register_user(event.source.user_id)
+    register_user(chat_id(event.source))
     state = get_state()
     status = state.conv_status
 
@@ -156,8 +196,8 @@ def handle_message(event):
                     ]
                 )
             )
-            line_bot_api.push_message(event.source.user_id, buttons_template)
-        else:
+            line_bot_api.reply_message(event.reply_token, buttons_template)
+        elif event.source.type == "user":  # 群組裡的一般聊天不回應，避免洗版
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="目前的有效指令為：\n1. 修改提醒時間\n2. 查詢提醒時間"))
     elif status == Status['check_reset_time']:
         match = re.match(r'^\d{4}/\d{2}/\d{2}$', user_input)
@@ -250,7 +290,7 @@ def check_reminder():
 # --------------------------- Postback 處理 ---------------------------
 @handler.add(PostbackEvent)
 def handle_postback(event):
-    register_user(event.source.user_id)
+    register_user(chat_id(event.source))
     state = get_state()
 
     data = json.loads(event.postback.data)
@@ -297,6 +337,7 @@ def handle_postback(event):
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=f"好的，{Medicine[med_type]}的下次提醒時間為 {next_date.strftime('%Y/%m/%d')}"))
+        broadcast(f"{display_name(event.source)} 已完成餵 {Medicine[med_type]}，下次提醒時間為 {next_date.strftime('%Y/%m/%d')}", chat_id(event.source))
 
     elif action == "delay_medicine":
         if getattr(state, f"{med_type}_status") != 'waiting':
@@ -319,6 +360,7 @@ def handle_postback(event):
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=f"{Medicine[med_type]}的下次提醒時間設為隔日 {tomorrow.strftime('%Y/%m/%d')} 送出提醒"))
+        broadcast(f"{display_name(event.source)} 選擇明天再提醒餵 {Medicine[med_type]}，將於 {tomorrow.strftime('%Y/%m/%d')} 再次提醒", chat_id(event.source))
 
 # --------------------------- 入口 ---------------------------
 if __name__ == "__main__":
