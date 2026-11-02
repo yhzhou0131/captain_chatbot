@@ -9,11 +9,5 @@ jobs:
   run-reminder:
     runs-on: ubuntu-latest
     steps:
-      - name: Wake up PythonAnywhere
-        run: curl https://easonandclaire.pythonanywhere.com/
-
-      - name: Wait for 1 minutes
-        run: sleep 60
-
       - name: Trigger Reminder API
-        run: curl https://easonandclaire.pythonanywhere.com/trigger_reminder
+        run: curl --fail --retry 3 --max-time 60 https://captain-chatbot.vercel.app/trigger_reminder
