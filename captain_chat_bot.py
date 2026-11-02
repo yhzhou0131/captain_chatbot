@@ -20,18 +20,7 @@ logging.basicConfig(
 )
 
 # --------------------------- 保持原文字常數 ---------------------------
-Status = {
-    'normal': 0,
-    'check_reset_time': 1,
-    'no_reminder_time': 2,
-    'reset_time': 3,
-    'query_reminder': 4
-}
-
-UserInput = {
-    Status['reset_time']: '修改提醒時間',
-    Status['query_reminder']: '查詢提醒時間'
-}
+CARD_KEYWORDS = {"隊長", "查詢提醒時間", "修改提醒時間"}  # 群組中只有這些關鍵字才會叫出狀態卡
 
 Medicine = {
     'bravecto': '一錠除',
@@ -75,8 +64,6 @@ class ReminderState(db.Model):
     heartgard_date = db.Column(db.DateTime, nullable=True)
     bravecto_status = db.Column(db.String(10), default='pending')  # 'pending' / 'waiting'
     heartgard_status = db.Column(db.String(10), default='pending')
-    conv_status = db.Column(db.Integer, default=Status['normal'])  # 對話狀態存 DB，serverless 不保留記憶體
-    conv_med = db.Column(db.String(10), nullable=True)
 
 class LineUser(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -175,75 +162,30 @@ def handle_unfollow(event):
 def handle_leave(event):
     unregister(chat_id(event.source))
 
+def med_buttons(med):
+    return [QuickReplyButton(action=PostbackAction(label=f"完成餵{Medicine[med]}", data=json.dumps({"action": "done_medicine", "type": med}))),
+            QuickReplyButton(action=PostbackAction(label=f"{Medicine[med]}明天再提醒", data=json.dumps({"action": "delay_medicine", "type": med})))]
+
+# Quick Reply 按鈕在聊天室出現任何新訊息（含 bot 的回覆）後會消失，達到「有人按了就收合」；已發出的訊息無法收回
+def status_card(state):
+    today = datetime.now(TZ_TW).date()
+    items, lines = [], []
+    for med in ("heartgard", "bravecto"):
+        d = getattr(state, f"{med}_date")
+        lines.append(f"{Medicine[med]}：{d.strftime('%Y/%m/%d') if d else '尚未設定'}")
+        items.append(QuickReplyButton(action=DatetimePickerAction(
+            label=f"設定{Medicine[med]}日期", data=json.dumps({"action": "set_date", "type": med}),
+            mode="date", initial=(max(d.date(), today) if d else today).isoformat(), min=today.isoformat())))
+        if getattr(state, f"{med}_status") == 'waiting':
+            items += med_buttons(med)
+    return TextSendMessage(text="隊長的餵藥日期\n" + "\n".join(lines), quick_reply=QuickReply(items=items))
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_input = event.message.text.strip()
     register_user(chat_id(event.source))
-    state = get_state()
-    status = state.conv_status
-
-    if status == Status['normal']:
-        if user_input == UserInput[Status['query_reminder']]:
-            query_reminder_date(event)
-        elif user_input == UserInput[Status['reset_time']]:
-            buttons_template = TemplateSendMessage(
-                alt_text='提醒訊息',
-                template=ButtonsTemplate(
-                    text="想要修改或設定的是犬新寶還是一錠除的時間呢？",
-                    actions=[
-                        PostbackAction(label="犬新寶", data='{"action":"update_reminder", "type":"heartgard"}'),
-                        PostbackAction(label="一錠除", data='{"action":"update_reminder", "type":"bravecto"}')
-                    ]
-                )
-            )
-            line_bot_api.reply_message(event.reply_token, buttons_template)
-        elif event.source.type == "user":  # 群組裡的一般聊天不回應，避免洗版
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="目前的有效指令為：\n1. 修改提醒時間\n2. 查詢提醒時間"))
-    elif status == Status['check_reset_time']:
-        match = re.match(r'^\d{4}/\d{2}/\d{2}$', user_input)
-        if match:
-            # 使用本地時區創建日期（設定為當天 00:00:00 台灣時間）
-            new_date = datetime.strptime(user_input, "%Y/%m/%d").replace(tzinfo=TZ_TW)
-            if new_date.date() < datetime.now(TZ_TW).date():
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="此為過去時間，請重新輸入提醒時間。"))
-                return
-            update_reminder_type = state.conv_med
-            if update_reminder_type is None:
-                app.logger.error("update_reminder_type 為空！")
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(text="後端有問題，請聯繫昱豪！"))
-                return
-            setattr(state, f"{update_reminder_type}_date", new_date)
-            setattr(state, f"{update_reminder_type}_status", 'pending')
-            state.conv_status = Status['normal']
-            db.session.commit()
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"完成設定，下次餵 {Medicine[update_reminder_type]} 的日期為：{new_date.strftime('%Y/%m/%d')}。"))
-        else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="時間輸入格式錯誤，請重新輸入提醒時間。"))
-    else:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"狀態錯誤，請通知昱豪！\nStatus = {status}"))
-
-# --------------------------- 功能：查詢提醒 ---------------------------
-def query_reminder_date(event):
-    state = get_state()
-    if not state.bravecto_date and not state.heartgard_date:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="目前沒有提醒時間，請輸入「修改提醒時間」進行設定。"))
-    elif not state.bravecto_date:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(
-                text=f"下次餵 {Medicine['heartgard']} 的日期為：{state.heartgard_date.strftime('%Y/%m/%d')}\n目前沒有設定 {Medicine['bravecto']} 的提醒時間，請輸入「修改提醒時間」"))
-    elif not state.heartgard_date:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(
-                text=f"下次餵 {Medicine['bravecto']} 的日期為：{state.bravecto_date.strftime('%Y/%m/%d')}\n目前沒有設定 {Medicine['heartgard']} 的提醒時間，請輸入「修改提醒時間」"))
-    else:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(
-                text=f"下次餵{Medicine['bravecto']}的日期為：{state.bravecto_date.strftime('%Y/%m/%d')}\n下次餵{Medicine['heartgard']}的日期為：{state.heartgard_date.strftime('%Y/%m/%d')}"))
+    # 一對一任何文字都叫出狀態卡；群組只回應關鍵字，避免洗版
+    if event.source.type == "user" or event.message.text.strip() in CARD_KEYWORDS:
+        line_bot_api.reply_message(event.reply_token, status_card(get_state()))
 
 # --------------------------- 功能：每日檢查並推播 ---------------------------
 def check_reminder():
@@ -266,16 +208,9 @@ def check_reminder():
         if med_date.date() != today or med_status != 'pending':
             continue  # 只針對今日且 pending 的提醒
 
-        buttons_template = TemplateSendMessage(
-            alt_text='提醒訊息',
-            template=ButtonsTemplate(
-                text=f"今天是餵隊長{Medicine[med]}的日子！請確認是否完成！",
-                actions=[
-                    PostbackAction(label="完成餵藥", data=f'{{"action":"done_medicine","type":"{med}"}}'),
-                    PostbackAction(label="明天再提醒", data=f'{{"action":"delay_medicine","type":"{med}"}}')
-                ]
-            )
-        )
+        buttons_template = TextSendMessage(
+            text=f"今天是餵隊長{Medicine[med]}的日子！請確認是否完成！",
+            quick_reply=QuickReply(items=med_buttons(med)))
         # 推播給所有註冊使用者
         for usr in LineUser.query.all():
             try:
@@ -295,6 +230,9 @@ def handle_postback(event):
 
     data = json.loads(event.postback.data)
     action = data.get("action")
+    if action == "show":
+        line_bot_api.reply_message(event.reply_token, status_card(state))
+        return
     med_type = data.get("type")
     today = datetime.now(TZ_TW).date()
     current_date = getattr(state, f"{med_type}_date")
@@ -303,13 +241,17 @@ def handle_postback(event):
     if current_date and current_date.tzinfo is None:
         current_date = current_date.replace(tzinfo=TZ_TW)
 
-    if action == "update_reminder":
-        state.conv_med = med_type
-        state.conv_status = Status['check_reset_time']
+    if action == "set_date":
+        new_date = datetime.strptime(event.postback.params["date"], "%Y-%m-%d").replace(tzinfo=TZ_TW)
+        if new_date.date() < today:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="此為過去時間，請重新選擇。"))
+            return
+        setattr(state, f"{med_type}_date", new_date)
+        setattr(state, f"{med_type}_status", 'pending')
         db.session.commit()
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="請輸入想要提醒的時間（YYYY/MM/DD）。"))
+        date_text = new_date.strftime('%Y/%m/%d')
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"完成設定，下次餵 {Medicine[med_type]} 的日期為：{date_text}。"))
+        broadcast(f"{display_name(event.source)} 設定下次餵 {Medicine[med_type]} 的日期為 {date_text}", chat_id(event.source))
 
     elif action == "done_medicine":
         # 只允許 waiting
@@ -331,7 +273,6 @@ def handle_postback(event):
         next_date = base_date + timedelta(days=delta)
         setattr(state, f"{med_type}_date", next_date)
         setattr(state, f"{med_type}_status", 'pending')   # 重設為 pending
-        state.conv_status = Status['normal']
         db.session.commit()
 
         line_bot_api.reply_message(
