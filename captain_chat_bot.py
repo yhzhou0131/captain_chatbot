@@ -4,6 +4,7 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import *
 import os, re, json
+from urllib.parse import quote_plus
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import logging
@@ -45,9 +46,16 @@ MYSQL_USER = os.getenv("MYSQL_USER", "EasonAndClaire")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
 MYSQL_DB = os.getenv("MYSQL_DB", "EasonAndClaire$default")
 MYSQL_HOST = os.getenv("MYSQL_HOST", "EasonAndClaire.mysql.pythonanywhere-services.com")
+MYSQL_PORT = os.getenv("MYSQL_PORT", "3306")
 
-app.config['SQLALCHEMY_DATABASE_URI'] = f'mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}/{MYSQL_DB}'
+app.config['SQLALCHEMY_DATABASE_URI'] = f'mysql+pymysql://{quote_plus(MYSQL_USER)}:{quote_plus(MYSQL_PASSWORD or "")}@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# TiDB 公網連線閒置 340 秒會被切斷，連線池需在此之前回收
+engine_options = {"pool_recycle": 280, "pool_pre_ping": True}
+if os.getenv("MYSQL_SSL"):  # TiDB Starter 強制 TLS；PythonAnywhere 不需要
+    import certifi
+    engine_options["connect_args"] = {"ssl": {"ca": certifi.where()}}
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = engine_options
 
 db = SQLAlchemy(app)
 
@@ -66,15 +74,13 @@ class ReminderState(db.Model):
     heartgard_date = db.Column(db.DateTime, nullable=True)
     bravecto_status = db.Column(db.String(10), default='pending')  # 'pending' / 'waiting'
     heartgard_status = db.Column(db.String(10), default='pending')
+    conv_status = db.Column(db.Integer, default=Status['normal'])  # 對話狀態存 DB，serverless 不保留記憶體
+    conv_med = db.Column(db.String(10), nullable=True)
 
 class LineUser(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.String(64), unique=True, nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
-
-# --------------------------- 全域狀態 ---------------------------
-update_reminder_type = None
-status = Status['normal']
 
 # --------------------------- 輔助函式 ---------------------------
 
@@ -127,10 +133,10 @@ def handle_join(event):
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    global status, update_reminder_type
     user_input = event.message.text.strip()
     register_user(event.source.user_id)
     state = get_state()
+    status = state.conv_status
 
     if status == Status['normal']:
         if user_input == UserInput[Status['query_reminder']]:
@@ -157,15 +163,16 @@ def handle_message(event):
             if new_date.date() < datetime.now(TZ_TW).date():
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="此為過去時間，請重新輸入提醒時間。"))
                 return
+            update_reminder_type = state.conv_med
             if update_reminder_type is None:
                 app.logger.error("update_reminder_type 為空！")
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text="後端有問題，請聯繫昱豪！"))
                 return
             setattr(state, f"{update_reminder_type}_date", new_date)
             setattr(state, f"{update_reminder_type}_status", 'pending')
+            state.conv_status = Status['normal']
             db.session.commit()
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"完成設定，下次餵 {Medicine[update_reminder_type]} 的日期為：{new_date.strftime('%Y/%m/%d')}。"))
-            status = Status['normal']
         else:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="時間輸入格式錯誤，請重新輸入提醒時間。"))
     else:
@@ -239,7 +246,6 @@ def check_reminder():
 # --------------------------- Postback 處理 ---------------------------
 @handler.add(PostbackEvent)
 def handle_postback(event):
-    global status, update_reminder_type
     register_user(event.source.user_id)
     state = get_state()
 
@@ -254,8 +260,9 @@ def handle_postback(event):
         current_date = current_date.replace(tzinfo=TZ_TW)
 
     if action == "update_reminder":
-        update_reminder_type = med_type
-        status = Status['check_reset_time']
+        state.conv_med = med_type
+        state.conv_status = Status['check_reset_time']
+        db.session.commit()
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text="請輸入想要提醒的時間（YYYY/MM/DD）。"))
@@ -280,12 +287,12 @@ def handle_postback(event):
         next_date = base_date + timedelta(days=delta)
         setattr(state, f"{med_type}_date", next_date)
         setattr(state, f"{med_type}_status", 'pending')   # 重設為 pending
+        state.conv_status = Status['normal']
         db.session.commit()
 
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(text=f"好的，{Medicine[med_type]}的下次提醒時間為 {next_date.strftime('%Y/%m/%d')}"))
-        status = Status['normal']
 
     elif action == "delay_medicine":
         if getattr(state, f"{med_type}_status") != 'waiting':
