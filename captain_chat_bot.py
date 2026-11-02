@@ -147,7 +147,12 @@ def trigger_reminder():
 # --------------------------- 事件處理 ---------------------------
 @handler.add(JoinEvent)
 def handle_join(event):
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="感謝邀請我加入！"))
+    # 群組沒有 Rich Menu，歡迎訊息附一顆按鈕，點了就叫出狀態卡
+    line_bot_api.reply_message(event.reply_token, TemplateSendMessage(
+        alt_text="感謝邀請我加入！",
+        template=ButtonsTemplate(
+            text="感謝邀請我加入！\n點下面按鈕查看或設定隊長的餵藥日期",
+            actions=[PostbackAction(label="查看 / 設定日期", data=json.dumps({"action": "show"}))])))
     register_user(chat_id(event.source))
 
 @handler.add(FollowEvent)

@@ -114,6 +114,10 @@ class Registration(BotTestCase):
         self.assertEqual(self.ids(), [])
         bot.handle_join(NS(source=NS(type="group", group_id="Cg2"), reply_token="t"))  # join 事件沒有 user_id
         self.assertEqual(self.ids(), ["Cg2"])
+        welcome = self.api.replies[-1][1]  # 歡迎訊息帶按鈕，點了送出 show
+        self.assertEqual(welcome.type, "template")
+        self.assertEqual(json.loads(welcome.template.actions[0].data), {"action": "show"})
+        json.dumps(welcome.as_json_dict(), ensure_ascii=False)
         bot.handle_leave(NS(source=NS(type="group", group_id="Cg2")))
         self.assertEqual(self.ids(), [])
 
