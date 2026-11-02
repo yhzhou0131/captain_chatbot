@@ -3,7 +3,7 @@ from flask_sqlalchemy import SQLAlchemy
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import *
-import os, re, json, hmac
+import os, json, hmac
 from urllib.parse import quote_plus
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
