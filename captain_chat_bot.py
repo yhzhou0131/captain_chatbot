@@ -194,40 +194,39 @@ def handle_message(event):
 
 # --------------------------- 功能：每日檢查並推播 ---------------------------
 def check_reminder():
-    # 使用台灣時區來取得今天的日期
     today = datetime.now(TZ_TW).date()
     state = get_state()
 
+    due_meds = []
     for med in ['bravecto', 'heartgard']:
         med_date = getattr(state, f"{med}_date")
-        med_status = getattr(state, f"{med}_status")
-
         if not med_date:
             continue
-        
-        # 確保 med_date 有時區資訊，如果沒有則假設為台灣時區
         if med_date.tzinfo is None:
             med_date = med_date.replace(tzinfo=TZ_TW)
-        
-        # 比較日期（使用台灣時區）
-        if med_date.date() != today or med_status != 'pending':
-            continue  # 只針對今日且 pending 的提醒
+        if med_date.date() == today and getattr(state, f"{med}_status") == 'pending':
+            due_meds.append(med)
 
-        text = f"今天是餵隊長{Medicine[med]}的日子！請確認是否完成！"
-        quick_msg = TextSendMessage(text=text, quick_reply=QuickReply(items=med_buttons(med)))
-        # 群組/多人聊天常被閒聊洗掉 Quick Reply（任何新訊息都會讓按鈕消失），改用不會消失的按鈕卡；ID 前綴 C=群組、R=多人聊天、U=使用者
-        card_msg = TemplateSendMessage(alt_text='提醒訊息', template=ButtonsTemplate(
-            text=text, actions=[b.action for b in med_buttons(med)]))
-        # 推播給所有註冊使用者
-        for usr in LineUser.query.all():
-            try:
-                line_bot_api.push_message(usr.user_id, card_msg if usr.user_id[0] in "CR" else quick_msg)
-            except Exception as e:
-                app.logger.warning(f"推送給 {usr.user_id} 失敗：{e}")
+    if not due_meds:
+        return
 
-            # 推播完標記，避免同一天重複
-            setattr(state, f"{med}_status", "waiting")
-        db.session.commit()   # 記得提交
+    all_buttons = [btn for med in due_meds for btn in med_buttons(med)]
+    med_names = "和".join(Medicine[m] for m in due_meds)
+    text = f"今天是餵隊長{med_names}的日子！請確認是否完成！"
+    quick_msg = TextSendMessage(text=text, quick_reply=QuickReply(items=all_buttons))
+    # 群組/多人聊天常被閒聊洗掉 Quick Reply，改用不會消失的按鈕卡；ButtonsTemplate 上限 4 個 action，剛好容納兩種藥各 2 顆按鈕
+    card_msg = TemplateSendMessage(alt_text='提醒訊息', template=ButtonsTemplate(
+        text=text, actions=[b.action for b in all_buttons]))
+
+    for usr in LineUser.query.all():
+        try:
+            line_bot_api.push_message(usr.user_id, card_msg if usr.user_id[0] in "CR" else quick_msg)
+        except Exception as e:
+            app.logger.warning(f"推送給 {usr.user_id} 失敗：{e}")
+
+    for med in due_meds:
+        setattr(state, f"{med}_status", "waiting")
+    db.session.commit()
 
 # --------------------------- Postback 處理 ---------------------------
 @handler.add(PostbackEvent)
