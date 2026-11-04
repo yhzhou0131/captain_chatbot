@@ -211,6 +211,21 @@ class DailyReminder(BotTestCase):
             json.dumps(sent[gid].as_json_dict(), ensure_ascii=False)
         self.assertEqual(bot.get_state().heartgard_status, "waiting")
 
+    def test_both_meds_due_same_day_sends_one_message_with_four_buttons(self):
+        bot.register_user("U1")
+        bot.register_user("Cg9")
+        self.set_med("heartgard", 0)
+        self.set_med("bravecto", 0)
+        bot.check_reminder()
+        sent = dict(self.api.pushes)
+        # one message per user, not two
+        self.assertEqual(len(self.api.pushes), 2)
+        self.assertEqual([i.action.type for i in sent["U1"].quick_reply.items], ["postback"] * 4)
+        self.assertEqual([a.type for a in sent["Cg9"].template.actions], ["postback"] * 4)
+        state = bot.get_state()
+        self.assertEqual(state.heartgard_status, "waiting")
+        self.assertEqual(state.bravecto_status, "waiting")
+
     def test_not_due_or_already_waiting_sends_nothing(self):
         bot.register_user("U1")
         self.set_med("heartgard", 3)
