@@ -171,6 +171,11 @@ def med_buttons(med):
     return [QuickReplyButton(action=PostbackAction(label=f"完成餵{Medicine[med]}", data=json.dumps({"action": "done_medicine", "type": med}))),
             QuickReplyButton(action=PostbackAction(label=f"{Medicine[med]}明天再提醒", data=json.dumps({"action": "delay_medicine", "type": med})))]
 
+# 回覆本身會讓先前的 Quick Reply 消失，所以把仍在 waiting 的藥的按鈕重新帶上
+def reply_text(event, state, text):
+    items = [b for med in ('bravecto', 'heartgard') if getattr(state, f"{med}_status") == 'waiting' for b in med_buttons(med)]
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=text, quick_reply=QuickReply(items=items) if items else None))
+
 # Quick Reply 按鈕在聊天室出現任何新訊息（含 bot 的回覆）後會消失，達到「有人按了就收合」；已發出的訊息無法收回
 def status_card(state):
     today = datetime.now(TZ_TW).date()
@@ -250,27 +255,24 @@ def handle_postback(event):
     if action == "set_date":
         new_date = datetime.strptime(event.postback.params["date"], "%Y-%m-%d").replace(tzinfo=TZ_TW)
         if new_date.date() < today:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="此為過去時間，請重新選擇。"))
+            reply_text(event, state, "此為過去時間，請重新選擇。")
             return
         setattr(state, f"{med_type}_date", new_date)
         setattr(state, f"{med_type}_status", 'pending')
         db.session.commit()
         date_text = new_date.strftime('%Y/%m/%d')
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"完成設定，下次餵 {Medicine[med_type]} 的日期為：{date_text}。"))
+        reply_text(event, state, f"完成設定，下次餵 {Medicine[med_type]} 的日期為：{date_text}。")
         broadcast(f"{display_name(event.source)} 設定下次餵 {Medicine[med_type]} 的日期為 {date_text}", chat_id(event.source))
 
     elif action == "done_medicine":
         # 只允許 waiting
         if getattr(state, f"{med_type}_status") != 'waiting':
-            line_bot_api.reply_message(event.reply_token,
-                TextSendMessage(text=f"已經完成過 {Medicine[med_type]} 的餵藥，不需要再操作。"))
+            reply_text(event, state, f"已經完成過 {Medicine[med_type]} 的餵藥，不需要再操作。")
             return
 
         # 若日期已經往後 (> 今天) 說明別人操作過
         if current_date and current_date.date() > today:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=f"已經完成過 {Medicine[med_type]} 的餵藥，不需要再操作。"))
+            reply_text(event, state, f"已經完成過 {Medicine[med_type]} 的餵藥，不需要再操作。")
             return
 
         # 順延日期
@@ -281,32 +283,24 @@ def handle_postback(event):
         setattr(state, f"{med_type}_status", 'pending')   # 重設為 pending
         db.session.commit()
 
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=f"好的，{Medicine[med_type]}的下次提醒時間為 {next_date.strftime('%Y/%m/%d')}"))
+        reply_text(event, state, f"好的，{Medicine[med_type]}的下次提醒時間為 {next_date.strftime('%Y/%m/%d')}")
         broadcast(f"{display_name(event.source)} 已完成餵 {Medicine[med_type]}，下次提醒時間為 {next_date.strftime('%Y/%m/%d')}", chat_id(event.source))
 
     elif action == "delay_medicine":
         if getattr(state, f"{med_type}_status") != 'waiting':
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=f"已經處理過 {Medicine[med_type]} 的提醒了。"))
+            reply_text(event, state, f"已經處理過 {Medicine[med_type]} 的提醒了。")
             return
 
         # 若日期已經往後 (> 今天) 說明別人操作過
         if current_date and current_date.date() > today:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=f"已經完成過 {Medicine[med_type]} 的餵藥，不需要再操作。"))
+            reply_text(event, state, f"已經完成過 {Medicine[med_type]} 的餵藥，不需要再操作。")
             return
 
         tomorrow = datetime.now(TZ_TW) + timedelta(days=1)
         setattr(state, f"{med_type}_date", tomorrow)
         setattr(state, f"{med_type}_status", 'pending')
         db.session.commit()
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=f"{Medicine[med_type]}的下次提醒時間設為隔日 {tomorrow.strftime('%Y/%m/%d')} 送出提醒"))
+        reply_text(event, state, f"{Medicine[med_type]}的下次提醒時間設為隔日 {tomorrow.strftime('%Y/%m/%d')} 送出提醒")
         broadcast(f"{display_name(event.source)} 選擇明天再提醒餵 {Medicine[med_type]}，將於 {tomorrow.strftime('%Y/%m/%d')} 再次提醒", chat_id(event.source))
 
 # --------------------------- 入口 ---------------------------

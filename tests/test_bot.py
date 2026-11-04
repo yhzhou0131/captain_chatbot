@@ -195,6 +195,15 @@ class DoneAndDelay(BotTestCase):
         self.assertIn("阿姨", self.api.pushes[0][1].text)
         self.assertEqual(bot.get_state().heartgard_status, "pending")
 
+    def test_reply_keeps_other_waiting_med_buttons(self):
+        self.set_med("heartgard", 0, "waiting")
+        self.set_med("bravecto", 0, "waiting")
+        bot.handle_postback(pb(USER, {"action": "done_medicine", "type": "heartgard"}))
+        items = self.api.replies[-1][1].quick_reply.items
+        self.assertEqual([json.loads(i.action.data)["type"] for i in items], ["bravecto"] * 2)
+        bot.handle_postback(pb(USER, {"action": "done_medicine", "type": "bravecto"}))
+        self.assertIsNone(self.api.replies[-1][1].quick_reply)
+
 
 class DailyReminder(BotTestCase):
     def test_quick_reply_for_users_card_for_groups_and_marks_waiting(self):
